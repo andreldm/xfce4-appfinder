@@ -2082,7 +2082,10 @@ xfce_appfinder_window_sort_items_frecency  (GtkTreeModel *model,
   else
     b_res = b_freq / 4;
 
-  return b_res - a_res;
+  if (b_res - a_res != 0)
+    return b_res - a_res;
+  else
+    return xfce_appfinder_window_sort_items (model, a, b, data);
 }
 
 
