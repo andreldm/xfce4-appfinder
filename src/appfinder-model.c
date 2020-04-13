@@ -108,6 +108,10 @@ static void               xfce_appfinder_model_frequency_collect      (XfceAppfi
                                                                        GMappedFile              *mmap);
 static void               xfce_appfinder_model_recency_collect        (XfceAppfinderModel       *model,
                                                                        GMappedFile              *mmap);
+static gint               xfce_appfinder_model_item_compare_frecency  (gconstpointer             a,
+                                                                       gconstpointer             b,
+                                                                       gpointer                  data);
+
 
 struct _XfceAppfinderModelClass
 {
@@ -150,6 +154,8 @@ struct _XfceAppfinderModel
   GFileMonitor          *history_monitor;
   GFile                 *history_file;
   guint64                history_mtime;
+  
+  gboolean               frecency_order;
 
   XfceAppfinderIconSize  icon_size;
 };
@@ -190,7 +196,8 @@ enum
 enum
 {
   PROP_0,
-  PROP_ICON_SIZE
+  PROP_ICON_SIZE,
+  PROP_FRECENCY_ORDER
 };
 
 
@@ -221,6 +228,12 @@ xfce_appfinder_model_class_init (XfceAppfinderModelClass *klass)
                                                       XFCE_APPFINDER_ICON_SIZE_LARGEST,
                                                       XFCE_APPFINDER_ICON_SIZE_DEFAULT_ITEM,
                                                       G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  
+  g_object_class_install_property (gobject_class,
+                                   PROP_FRECENCY_ORDER,
+                                   g_param_spec_boolean ("frecency-order", NULL, NULL,
+                                                         FALSE,
+                                                         G_PARAM_CONSTRUCT_ONLY | G_PARAM_READWRITE));
 
   model_signals[CATEGORIES_CHANGED] =
     g_signal_new (g_intern_static_string ("categories-changed"),
@@ -292,6 +305,10 @@ xfce_appfinder_model_get_property (GObject      *object,
     case PROP_ICON_SIZE:
       g_value_set_uint (value, model->icon_size);
       break;
+      
+    case PROP_FRECENCY_ORDER:
+      g_value_set_boolean (value, model->frecency_order);
+      break;
 
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -321,6 +338,10 @@ xfce_appfinder_model_set_property (GObject      *object,
           /* trigger a theme change to reload icons */
           xfce_appfinder_model_icon_theme_changed (model);
         }
+      break;
+    
+    case PROP_FRECENCY_ORDER:
+      model->frecency_order = g_value_get_boolean (value);
       break;
 
     default:
@@ -1954,7 +1975,7 @@ xfce_appfinder_model_collect_thread (gpointer user_data)
 
       g_free (filename);
     }
-  
+
   /* load frequencies */
   filename = xfce_resource_lookup (XFCE_RESOURCE_CONFIG, FREQUENCY_PATH);
   if (G_LIKELY (filename != NULL))
@@ -1975,7 +1996,7 @@ xfce_appfinder_model_collect_thread (gpointer user_data)
 
       g_free (filename);
     }
-    
+
     /* load recencies */
   filename = xfce_resource_lookup (XFCE_RESOURCE_CONFIG, RECENCY_PATH);
   if (G_LIKELY (filename != NULL))
@@ -2000,7 +2021,10 @@ xfce_appfinder_model_collect_thread (gpointer user_data)
   if (model->collect_items != NULL
       && !g_cancellable_is_cancelled (model->collect_cancelled))
     {
-      model->collect_items = g_slist_sort (model->collect_items, xfce_appfinder_model_item_compare);
+      if (model->frecency_order)
+        model->collect_items = g_slist_sort_with_data (model->collect_items, xfce_appfinder_model_item_compare_frecency, model);
+      else
+        model->collect_items = g_slist_sort (model->collect_items, xfce_appfinder_model_item_compare);
       model->collect_categories = g_slist_sort (model->collect_categories, xfce_appfinder_model_category_compare);
 
       model->collect_idle_id = gdk_threads_add_idle_full (G_PRIORITY_LOW, xfce_appfinder_model_collect_idle,
@@ -2016,6 +2040,98 @@ xfce_appfinder_model_collect_thread (gpointer user_data)
   APPFINDER_DEBUG ("collect thread end");
 
   return NULL;
+}
+
+
+
+guint
+xfce_appfinder_model_calculate_frecency (guint               frequency,
+                                         guint64             recency)
+{
+  GDateTime          *date_time_now;
+  guint64             unix_time_now;
+  guint64             diff;
+
+  /* Get the current timestamp */
+  date_time_now = g_date_time_new_now_local ();
+  unix_time_now = g_date_time_to_unix (date_time_now);
+  g_date_time_unref (date_time_now);
+
+  diff = unix_time_now - recency;
+
+  /* return frecency according to the frequency and how recent the item is */
+  if (diff < 3600)
+    return frequency * 4;
+  else if (diff < 86400)
+    return frequency * 2;
+  else if (diff < 604800)
+    return frequency / 2;
+  else
+    return frequency / 4;
+}
+
+
+
+static gint
+xfce_appfinder_model_item_compare_frecency (gconstpointer a,
+                                            gconstpointer b,
+                                            gpointer      data)
+{
+  const ModelItem     *item_a = a, *item_b = b;
+  guint                freq_a, freq_b;
+  guint64              rec_a, rec_b;
+  guint                res_a, res_b;
+  const gchar         *desktop_id_1, *desktop_id_2;
+  gpointer             rec_a_ptr, rec_b_ptr;
+  XfceAppfinderModel  *model;
+
+  model = (XfceAppfinderModel *)data;
+
+  /* Sorting for items that has *.desktop, otherwise fallback to the original sorting order */
+  if ((item_a->item != NULL) && (item_b->item != NULL))
+    {
+      desktop_id_1 = garcon_menu_item_get_desktop_id (item_a->item);
+      desktop_id_2 = garcon_menu_item_get_desktop_id (item_b->item);
+
+      if ((desktop_id_1 != NULL) && (desktop_id_2 != NULL))
+        {
+          freq_a = GPOINTER_TO_UINT(g_hash_table_lookup (model->frequencies_hash, desktop_id_1));
+          freq_b = GPOINTER_TO_UINT(g_hash_table_lookup (model->frequencies_hash, desktop_id_2));
+
+          rec_a_ptr = g_hash_table_lookup (model->recencies_hash, desktop_id_1);
+          rec_b_ptr = g_hash_table_lookup (model->recencies_hash, desktop_id_2);
+
+          if (rec_a_ptr)
+            {
+              rec_a = *((guint64 *) rec_a_ptr);
+            }
+          else
+            {
+              rec_a = 0;
+            }
+          
+          if (rec_b_ptr)
+            {
+              rec_b = *((guint64 *) rec_b_ptr);
+            }
+          else
+            {
+              rec_b = 0;
+            }
+
+          res_a = xfce_appfinder_model_calculate_frecency (freq_a, rec_a);
+          res_b = xfce_appfinder_model_calculate_frecency (freq_b, rec_b);
+
+          /* Sort according the frecency */
+          /* If they have the same frecency fallback to the alphabetical order */
+          if (res_b - res_a != 0)
+            return res_b - res_a;
+          else
+            return xfce_appfinder_model_item_compare (a, b);
+        }
+    }
+
+  return xfce_appfinder_model_item_compare (a, b);
 }
 
 
@@ -2105,8 +2221,8 @@ xfce_appfinder_model_recency_collect   (XfceAppfinderModel  *model,
 
 void
 xfce_appfinder_model_update_frecency (XfceAppfinderModel *model,
-                                       const gchar        *desktop_id,
-                                       GError            **error)
+                                      const gchar        *desktop_id,
+                                      GError            **error)
 {
   ModelItem    *item;
   GSList       *li;
@@ -2201,7 +2317,7 @@ xfce_appfinder_model_update_frecency (XfceAppfinderModel *model,
 
 
 XfceAppfinderModel *
-xfce_appfinder_model_get (void)
+xfce_appfinder_model_get (gboolean frecency_order_flag)
 {
   static XfceAppfinderModel *model = NULL;
 
@@ -2211,7 +2327,9 @@ xfce_appfinder_model_get (void)
     }
   else
     {
-      model = g_object_new (XFCE_TYPE_APPFINDER_MODEL, NULL);
+      model = g_object_new (XFCE_TYPE_APPFINDER_MODEL,
+                            "frecency-order", frecency_order_flag,
+                            NULL);
       g_object_add_weak_pointer (G_OBJECT (model), (gpointer) &model);
       appfinder_refcount_debug_add (G_OBJECT (model), "appfinder-model");
       APPFINDER_DEBUG ("allocate new model");

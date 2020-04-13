@@ -69,7 +69,7 @@ XfceAppfinderIconSize;
 
 GType                xfce_appfinder_model_get_type               (void) G_GNUC_CONST;
 
-XfceAppfinderModel  *xfce_appfinder_model_get                    (void) G_GNUC_MALLOC;
+XfceAppfinderModel  *xfce_appfinder_model_get                    (gboolean                   frecency_order_flag) G_GNUC_MALLOC;
 
 GSList              *xfce_appfinder_model_get_categories         (XfceAppfinderModel        *model);
 
@@ -113,6 +113,8 @@ GarconMenuDirectory *xfce_appfinder_model_get_bookmarks_category (void);
 void                 xfce_appfinder_model_update_frecency        (XfceAppfinderModel       *model,
                                                                   const gchar              *desktop_id,
                                                                   GError                  **error);
+guint                xfce_appfinder_model_calculate_frecency     (guint                     frequency,
+                                                                  guint64                   recency);
 
 G_END_DECLS
 

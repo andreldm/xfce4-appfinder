@@ -226,7 +226,7 @@ xfce_appfinder_window_init (XfceAppfinderWindow *window)
   xfconf_g_property_bind (window->channel, "/category-icon-size", G_TYPE_UINT,
                           G_OBJECT (window->category_model), "icon-size");
 
-  window->model = xfce_appfinder_model_get ();
+  window->model = xfce_appfinder_model_get (xfconf_channel_get_bool (window->channel, "/recent-order", FALSE));
   xfconf_g_property_bind (window->channel, "/item-icon-size", G_TYPE_UINT,
                           G_OBJECT (window->model), "icon-size");
 
@@ -2035,16 +2035,9 @@ xfce_appfinder_window_sort_items_frecency  (GtkTreeModel *model,
                                             GtkTreeIter  *b,
                                             gpointer      data)
 {
-  gint        a_freq, b_freq;
-  gint64      a_rec, b_rec;
-  gint        a_res, b_res;
-  GDateTime  *date_time_now;
-  guint64     unix_time_now;
-  guint64     diff;
-  
-  date_time_now = g_date_time_new_now_local ();
-  unix_time_now = g_date_time_to_unix (date_time_now);
-  g_date_time_unref (date_time_now);
+  guint        a_freq, b_freq;
+  guint64      a_rec, b_rec;
+  guint        a_res, b_res;
 
   gtk_tree_model_get (model, a,
                       XFCE_APPFINDER_MODEL_COLUMN_FREQUENCY, &a_freq,
@@ -2060,28 +2053,11 @@ xfce_appfinder_window_sort_items_frecency  (GtkTreeModel *model,
                       XFCE_APPFINDER_MODEL_COLUMN_RECENCY, &b_rec,
                       -1);
 
-  diff = unix_time_now - a_rec;
+  a_res = xfce_appfinder_model_calculate_frecency (a_freq, a_rec);
+  b_res = xfce_appfinder_model_calculate_frecency (b_freq, b_rec);
 
-  if (diff < 3600)
-    a_res = a_freq * 4;
-  else if (diff < 86400)
-    a_res = a_freq * 2;
-  else if (diff < 604800)
-    a_res = a_freq / 2;
-  else
-    a_res = a_freq / 4;
-  
-  diff = unix_time_now - b_rec;
-
-  if (diff < 3600)
-    b_res = b_freq * 4;
-  else if (diff < 86400)
-    b_res = b_freq * 2;
-  else if (diff < 604800)
-    b_res = b_freq / 2;
-  else
-    b_res = b_freq / 4;
-
+  /* Sort according the frecency */
+  /* If they have the same frecency fallback to the alphabetical order */
   if (b_res - a_res != 0)
     return b_res - a_res;
   else

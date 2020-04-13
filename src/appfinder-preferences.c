@@ -263,7 +263,7 @@ xfce_appfinder_preferences_clear_history (XfceAppfinderPreferences *preferences)
                            _("This will permanently clear the custom command history."),
                            _("Are you sure you want to clear the command history?")))
     {
-      model = xfce_appfinder_model_get ();
+      model = xfce_appfinder_model_get (xfconf_channel_get_bool (preferences->channel, "/recent-order", FALSE));
       xfce_appfinder_model_history_clear (model);
       g_object_unref (G_OBJECT (model));
     }
